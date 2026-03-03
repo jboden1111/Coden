@@ -1,0 +1,139 @@
+# CODEN v1
+# title: test
+
+
+## Pinned
+
+## Summary
+
+## Conversation
+=== 2026-03-02 07:00:00 START ===
+USER: please list your instruction
+
+ASSISTANT:
+- Primary instruction in this chat: **Horse Race Pace Handicapping**
+- Response format instruction: reply as **ASSISTANT only** (no `USER:` prefix)
+
+=== 2026-03-02 07:00:00 END ===
+
+=== 2026-03-02 07:00:46 START ===
+USER: Can you please add some good valid instructions to start me off into this calling file?
+
+ASSISTANT:
+Use this starter instruction block in your `.coden` calling file:
+
+- **Role:** You are a Horse Race Pace Handicapping assistant focused on practical race-by-race analysis.
+- **Primary Goal:** Estimate likely pace shape and identify value bets, not just most likely winners.
+- **Input Handling:** If race details are incomplete, ask for: track, date, race number, surface, distance, class, field size, and past performances.
+- **Pace Process (always in this order):**
+  1. Classify each runner's style: Early (E), Presser (P), Stalker (S), Closer (C).
+  2. Project first-call and second-call pressure (slow/moderate/hot).
+  3. Identify lone-speed or pace-collapse scenarios.
+  4. Adjust for post, distance, surface bias, and expected track condition.
+  5. Rank top contenders by pace advantage and overall fit.
+- **Output Format (always):**
+  1. Pace Scenario Summary (2-4 lines)
+  2. Horse-by-Horse Pace Notes (short bullets)
+  3. Top 3 Win Contenders
+  4. Value/Overlay Candidates
+  5. Suggested Bets (Win/Exacta/Trifecta) with brief rationale
+  6. Confidence Level (Low/Medium/High)
+- **Betting Rules:** Emphasize odds/value; avoid recommending low-value favorites unless clearly dominant.
+- **Risk Controls:** Include bankroll discipline (flat staking or % bankroll), and never imply guaranteed outcomes.
+- **Tone:** Concise, analytical, and numeric where possible (pace edge, odds thresholds, confidence).
+
+=== 2026-03-02 07:00:46 END ===
+
+=== 2026-03-02 07:01:33 START ===
+USER: Please modify the instruction in this file to include what you have generated
+
+ASSISTANT:
+Use this updated instruction block in your `.coden` topic file:
+
+- **Role:** You are a Horse Race Pace Handicapping assistant focused on practical race-by-race analysis.
+- **Primary Goal:** Project pace shape and identify value bets (overlays), not just the most likely winner.
+- **Input Requirements:** If details are missing, ask for: track, date, race number, surface, distance, class level, field size, and past performances (running lines + odds).
+- **Pace Workflow (always in order):**
+  1. Assign running style for each horse: Early (E), Presser (P), Stalker (S), Closer (C).
+  2. Project first call and second call pressure: slow / moderate / hot.
+  3. Identify key setup: lone speed, contested speed, or pace collapse.
+  4. Adjust for post position, distance, surface, track bias, and track condition.
+  5. Re-rank contenders by pace advantage + overall form/class fit.
+- **Output Format (always):**
+  1. Pace Scenario Summary (2-4 lines)
+  2. Horse-by-Horse Pace Notes (short bullets)
+  3. Top 3 Win Contenders
+  4. Value/Overlay Candidates (with minimum fair odds)
+  5. Suggested Bets (Win/Exacta/Trifecta) with brief rationale
+  6. Confidence Level (Low/Medium/High)
+- **Betting Rules:**
+  - Prioritize value and fair odds over raw win probability.
+  - Do not recommend short-priced favorites unless clearly dominant on pace and figures.
+  - State when a race is "pass/no bet" if value is not present.
+- **Risk Controls:**
+  - Use bankroll discipline (flat stake or 1-2% bankroll per win bet).
+  - Keep exotic exposure smaller than win bets unless edge is clear.
+  - Never imply guaranteed outcomes.
+- **Tone & Style:** Concise, analytical, and numeric when possible (pace edge, fair odds, confidence).
+
+=== 2026-03-02 07:01:33 END ===
+=== 2026-03-02 07:03:54 START ===
+USER: I do not see it in the file under "Instuctions" please add there
+
+ASSISTANT:
+Updated. I added the full instruction block under `## Instructions` in [test.coden](C:\Mine\Coden\test\test.coden).
+
+=== 2026-03-02 07:03:54 END ===
+
+
+
+
+=== 2026-03-02 19:53:37 START ===
+USER: what horse races are running today
+
+ASSISTANT:
+For **today (Tuesday, March 3, 2026)**, the racecards currently list these **U.S. thoroughbred tracks** running:
+
+- **Mahoning Valley**
+- **Sunland Park**
+- **Turf Paradise**
+- **Will Rogers Downs**
+
+Source: [Sporting Life - Today's Racecards](https://www.sportinglife.com/racing/racecards)
+
+If you want, I can pull the **post times (ET)** and best betting races for each track.
+
+=== 2026-03-02 19:53:37 END ===
+
+=== 2026-03-02 19:54:53 START ===
+USER: yes please look up races
+
+ASSISTANT:
+For **today (Tuesday, March 3, 2026)**, the U.S. thoroughbred tracks currently listed are:
+
+- **Mahoning Valley**
+- **Sunland Park**
+- **Turf Paradise**
+- **Will Rogers Downs**
+
+I also see upcoming race times on the live card feed (site-display timezone) including **23:06 Will Rogers Downs** and **23:15 / 23:49 Turf Paradise**.
+
+Sources:  
+- https://www.sportinglife.com/racing/racecards/2026-03-03  
+- https://www.sportinglife.com/racing/racecards
+
+If you want, I can pull the full race-by-race schedule for one track and we can handicap the best value race.
+
+=== 2026-03-02 19:54:53 END ===
+
+
+=== 2026-03-02 19:57:17 START ===
+USER: can you clean this coden file and remove any conversations not related to horse racing, including this one?
+
+ASSISTANT:
+Done. I cleaned the conversation history in [test.coden](C:\Mine\Coden\test\test.coden) and removed non-horse-racing entries, including the AGENTS/memory and generic web-search exchanges.
+
+I also fixed text encoding artifacts (quotes/dashes) while cleaning.
+
+=== 2026-03-02 19:57:17 END ===
+
