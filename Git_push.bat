@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal 
 
 REM Ensure this is a git repository
 for /f %%i in ('git rev-parse --is-inside-work-tree 2^>nul') do set INSIDE_REPO=%%i
