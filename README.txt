@@ -1,6 +1,6 @@
 CODEN Topic Files (.coden) — Double-click to start a terminal session
 
-This package installs:
+This package installs: 
   C:\Mine\Coden\coden.mjs         Node wrapper that runs Codex CLI in a loop
   C:\Mine\Coden\coden-open.cmd    File association target for .coden
   C:\Mine\Coden\coden-open.bat    Same as .cmd (optional)
