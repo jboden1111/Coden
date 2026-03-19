@@ -1,0 +1,29 @@
+# CODEN v1
+# title: Replace with topic title
+
+## Instructions
+Goal:
+- State the exact objective of this topic.
+- Say what you want Codex to help you produce or decide.
+
+Deliverable:
+- Define what a successful result looks like.
+- Mention whether you want code changes, analysis, review, documentation, or instructions only.
+
+Working style:
+- Be concrete and implementation-focused.
+- Prefer changes that fit this repo's current structure and Windows-first workflow.
+- Call out risks before changing parsing, prompt assembly, launcher behavior, lock handling, or sandbox behavior.
+
+Out of scope:
+- List anything this topic should avoid doing or changing.
+
+## Pinned
+- Relevant files: coden.mjs, coden-open.cmd, coden-setup.bat, README.txt
+- Stable facts: This topic lives in the CODEN system folder and should follow the shared AGENTS.md guidance.
+- Constraints: Keep `.coden` files human-editable and treat them as the source of truth for this topic.
+- Preferences: Add any durable user preferences, paths, environment facts, or naming conventions here.
+
+## Summary
+
+## Conversation

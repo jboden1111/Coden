@@ -7,8 +7,16 @@ if "%CODEN_FILE%"=="" (
   exit /b 1
 )
 
+set "CODEN_FILE_ABS=%~f1"
+
+if not exist "%CODEN_FILE_ABS%" (
+  echo Could not find .coden file:
+  echo %CODEN_FILE_ABS%
+  exit /b 1
+)
+
 REM Run the Node wrapper, passing the clicked file path
-node "C:\Mine\Coden\coden.mjs" "%CODEN_FILE%"
+node "%~dp0coden.mjs" "%CODEN_FILE_ABS%"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

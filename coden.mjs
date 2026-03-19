@@ -15,20 +15,21 @@
  * - Keep your topic file as the source of truth (summary + tail turns)
  *
  * Commands:
- *   :help, :exit, :summary, :tail N, :model NAME, :reload, :open, :fork, :export
+ *   :help, :exit, :summary, :tail N, :model NAME, :reload, :open, :fork, :export, :file
  */
 
 import fs from "fs";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import readline from "readline/promises";
 import { stdin as input, stdout as output } from "process";
 
 const DEFAULTS = {
   codexBin: process.platform === "win32" ? "codex.cmd" : "codex",
   sandbox: "workspace-write",
+  bypassSandboxWhenAdmin: true,
   tailTurns: 24,
   autoSummarize: true,
   summarizeEveryTurns: 12,
@@ -192,6 +193,29 @@ function buildPrompt({ title, sharedInstructions, instructions, pinned, summary,
   return lines.join("\n");
 }
 
+function buildTemplateInstructionsBlock(instructions) {
+  const cleanInstructions = (instructions || "").trim();
+  if (cleanInstructions) return cleanInstructions;
+
+  return [
+    "Goal:",
+    "- State the exact objective of this topic.",
+    "- Say what you want Codex to help you produce or decide.",
+    "",
+    "Deliverable:",
+    "- Define what a successful result looks like.",
+    "- Mention whether you want code changes, analysis, review, documentation, or instructions only.",
+    "",
+    "Working style:",
+    "- Be concrete and implementation-focused.",
+    "- Prefer changes that fit this repo's current structure and Windows-first workflow.",
+    "- Call out risks before changing parsing, prompt assembly, launcher behavior, lock handling, or sandbox behavior.",
+    "",
+    "Out of scope:",
+    "- List anything this topic should avoid doing or changing.",
+  ].join("\n");
+}
+
 function ensureBaseStructure(filePath) {
   const existing = safeRead(filePath);
   if (/^##\s+Conversation\s*$/m.test(existing)) return existing;
@@ -202,13 +226,15 @@ function ensureBaseStructure(filePath) {
 # title: ${title}
 
 ## Instructions
-(put stable instructions here)
+${buildTemplateInstructionsBlock("")}
 
 ## Pinned
-(put stable facts/context here)
+- Relevant files: coden.mjs, coden-open.cmd, coden-setup.bat, README.txt
+- Stable facts: This topic lives in the CODEN system folder and should follow the shared AGENTS.md guidance.
+- Constraints: Keep \`.coden\` files human-editable and treat them as the source of truth for this topic.
+- Preferences: Add any durable user preferences, paths, environment facts, or naming conventions here.
 
 ## Summary
-(optional rolling summary)
 
 ## Conversation
 `;
@@ -218,15 +244,18 @@ function ensureBaseStructure(filePath) {
 }
 
 function buildCodenTemplate({ title, instructions }) {
-  const cleanInstructions = (instructions || "").trim();
   return (
 `# CODEN v1
 # title: ${title}
 
 ## Instructions
-${cleanInstructions || "Use this .coden file as the persistent source of truth for this topic conversation."}
+${buildTemplateInstructionsBlock(instructions)}
 
 ## Pinned
+- Relevant files: coden.mjs, coden-open.cmd, coden-setup.bat, README.txt
+- Stable facts: This topic lives in the CODEN system folder and should follow the shared AGENTS.md guidance.
+- Constraints: Keep \`.coden\` files human-editable and treat them as the source of truth for this topic.
+- Preferences: Add any durable user preferences, paths, environment facts, or naming conventions here.
 
 ## Summary
 
@@ -241,8 +270,94 @@ function compactSingleLine(text, maxLen = 200) {
   return oneLine.length > maxLen ? oneLine.slice(0, maxLen - 3) + "..." : oneLine;
 }
 
+function isRunningAsAdmin() {
+  if (process.platform !== "win32") return false;
+  try {
+    const out = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$identity = [Security.Principal.WindowsIdentity]::GetCurrent(); " +
+        "$principal = New-Object Security.Principal.WindowsPrincipal($identity); " +
+        "[Console]::Out.Write($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+      ],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+      }
+    );
+
+    if (out.status !== 0) return false;
+    return (out.stdout || "").trim().toLowerCase() === "true";
+  } catch {
+    return false;
+  }
+}
+
+function getRunningUser() {
+  if (process.platform === "win32") {
+    const domain = process.env.USERDOMAIN || "";
+    const user = process.env.USERNAME || "";
+    if (domain && user) return `${domain}\\${user}`;
+    if (user) return user;
+  }
+
+  return process.env.USER || process.env.LOGNAME || "(unknown)";
+}
+
+function getSandboxMode() {
+  if (isRunningAsAdmin()) {
+    // return "danger-full-access";
+    return "workspace-write";
+  }
+  return DEFAULTS.sandbox;
+}
+
+function shouldBypassSandbox() {
+  return isRunningAsAdmin() && DEFAULTS.bypassSandboxWhenAdmin;
+}
+
+function listDirectoryFiles(workdir) {
+  return fs.readdirSync(workdir, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function resolveFileSelection(files, token, selectedIndex) {
+  if (!token) {
+    return Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < files.length
+      ? selectedIndex
+      : -1;
+  }
+
+  const index = Number(token);
+  if (!Number.isInteger(index) || index < 1 || index > files.length) return -1;
+  return index - 1;
+}
+
+function showFileList(workdir, selectedIndex) {
+  const files = listDirectoryFiles(workdir);
+  if (!files.length) {
+    console.log("No files found in the current directory.\n");
+    return files;
+  }
+
+  console.log("Files in current directory:");
+  files.forEach((name, idx) => {
+    const marker = idx === selectedIndex ? "*" : " ";
+    console.log(` ${marker} ${idx + 1}. ${name}`);
+  });
+  console.log("");
+  return files;
+}
+
 function showStartupSnapshot({ fileText, sharedInstructions = "", maxTurns = 5 }) {
   const instructions = parseSection(fileText, "Instructions");
+  const pinned = parseSection(fileText, "Pinned");
+  const summary = parseSection(fileText, "Summary");
   const conversation = parseSection(fileText, "Conversation");
   const turns = parseTurns(conversation);
   const recent = turns.slice(-maxTurns);
@@ -250,6 +365,8 @@ function showStartupSnapshot({ fileText, sharedInstructions = "", maxTurns = 5 }
   console.log("Loaded existing topic context:");
   console.log(`- Folder instructions: ${compactSingleLine(sharedInstructions, 260)}`);
   console.log(`- Topic instructions: ${compactSingleLine(instructions, 260)}`);
+  console.log(`- Pinned context: ${compactSingleLine(pinned, 260)}`);
+  console.log(`- Rolling summary: ${compactSingleLine(summary, 260)}`);
   console.log(`- Recent conversation (${recent.length}/${turns.length} turns):`);
 
   if (!recent.length) {
@@ -288,7 +405,19 @@ ${assistantMessage.trim()}
 === ${stamp} END ===
 
 `;
-  atomicWrite(codenPath, text + block);
+
+  const conversationHeadingRe = /^##\s+Conversation\s*$/m;
+  const match = conversationHeadingRe.exec(text);
+  if (!match) {
+    atomicWrite(codenPath, text + block);
+    return;
+  }
+
+  const insertAt = match.index + match[0].length;
+  const afterHeading = text.slice(insertAt).replace(/^\r?\n*/, "");
+  const prefix = text.slice(0, insertAt).trimEnd();
+  const nextText = `${prefix}\n\n${block}${afterHeading}`.replace(/\n{3,}/g, "\n\n");
+  atomicWrite(codenPath, nextText);
 }
 
 function upsertSummary(codenPath, newSummary) {
@@ -313,15 +442,21 @@ function upsertSummary(codenPath, newSummary) {
 
 async function runCodexOnce({ workdir, prompt, modelOverride, codexBin, stream }) {
   const outFile = path.join(os.tmpdir(), `coden_last_${crypto.randomBytes(8).toString("hex")}.txt`);
+  const sandboxMode = getSandboxMode();
 
   const args = [
     "exec",
     "--cd", workdir,
     "--skip-git-repo-check",
-    "--sandbox", DEFAULTS.sandbox,
     "--color", "never",
     "--output-last-message", outFile,
   ];
+
+  if (shouldBypassSandbox()) {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  } else {
+    args.push("--sandbox", sandboxMode);
+  }
 
   if (stream) args.push("--json");
   if (modelOverride) args.push("--model", modelOverride);
@@ -473,6 +608,7 @@ async function main() {
     model: null,
     tailTurns: DEFAULTS.tailTurns,
     lastAssistant: "",
+    selectedFileIndex: -1,
   };
 
   const showHelp = () => {
@@ -487,6 +623,10 @@ Commands:
   :open               Open the .coden in Notepad
   :fork               Duplicate topic file next to it
   :export             Save last assistant reply to <topic>.last.txt
+  :file               List files in the current directory
+  :file N             Select file N from the list
+  :file open [N]      Open the selected file or file N
+  :file path [N]      Print the full path of the selected file or file N
 `.trim() + "\n");
   };
 
@@ -498,6 +638,9 @@ Commands:
     console.log("====================================");
     console.log(`CODEN Topic: ${title}`);
     console.log(`File: ${absPath}`);
+    console.log(`Launcher user: ${getRunningUser()}`);
+    console.log(`Launcher admin: ${isRunningAsAdmin() ? "yes" : "no"}`);
+    console.log(`Codex sandbox: ${shouldBypassSandbox() ? "bypassed" : getSandboxMode()}`);
     if (startupShared.text) {
       console.log(`Shared instructions: ${path.basename(startupShared.path)}`);
     } else {
@@ -549,6 +692,51 @@ Commands:
 
       if (low === ":open") {
         spawn("notepad", [absPath], { detached: true, stdio: "ignore" }).unref();
+        continue;
+      }
+
+      if (low === ":file" || low.startsWith(":file ")) {
+        const parts = msg.split(/\s+/);
+        const action = (parts[1] || "").toLowerCase();
+        const files = listDirectoryFiles(workdir);
+
+        if (low === ":file") {
+          showFileList(workdir, session.selectedFileIndex);
+          continue;
+        }
+
+        if (action === "open" || action === "path") {
+          const targetIndex = resolveFileSelection(files, parts[2], session.selectedFileIndex);
+          if (targetIndex === -1) {
+            console.log("Select a file first with :file N, or provide a valid file number.\n");
+            continue;
+          }
+
+          const targetPath = path.join(workdir, files[targetIndex]);
+          session.selectedFileIndex = targetIndex;
+
+          if (action === "path") {
+            console.log(`${targetPath}\n`);
+            continue;
+          }
+
+          spawn("cmd", ["/c", "start", "", targetPath], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          }).unref();
+          console.log(`Opened: ${files[targetIndex]}\n`);
+          continue;
+        }
+
+        const targetIndex = resolveFileSelection(files, parts[1], session.selectedFileIndex);
+        if (targetIndex === -1) {
+          console.log("Usage: :file, :file N, :file open [N], :file path [N]\n");
+          continue;
+        }
+
+        session.selectedFileIndex = targetIndex;
+        console.log(`Selected file: ${files[targetIndex]}\n`);
         continue;
       }
 
