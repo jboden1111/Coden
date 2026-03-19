@@ -36,12 +36,14 @@ Preserve these assumptions unless the user explicitly asks to change them:
    - `## Conversation`
 3. Folder-level `AGENTS.md` is shared context for topics launched from this folder.
 4. The runner should re-read live file contents on each turn so manual edits take effect immediately.
-5. Startup behavior matters:
+5. Conversation turns should remain in chronological order inside `## Conversation` so the end of the section is the newest state.
+6. Rolling summaries should be generated from the persisted on-disk topic state after new turns are written.
+7. Startup behavior matters:
    - empty `.coden` files should bootstrap cleanly
    - non-empty `.coden` files should show useful context on load
    - available commands should be visible on load
-6. The system is designed for Windows shell users first.
-7. The system should remain understandable and editable without hidden state or a database.
+8. The system is designed for Windows shell users first.
+9. The system should remain understandable and editable without hidden state or a database.
 
 Do not move the source of truth out of the `.coden` files unless the user directly asks for that.
 
@@ -70,6 +72,7 @@ These points are already established and should inform future changes:
 
 - Codex should have write access by default within the folder containing the active `.coden` file.
 - Startup context matters: shared folder instructions first, then topic instructions, then recent conversation.
+- Conversation history should read top-to-bottom as oldest-to-newest, and recent-tail logic should treat the bottom of `## Conversation` as newest.
 - Empty topic files should prompt for minimal instructions and then be initialized into a valid `.coden` structure.
 - `AGENTS.md` is the preferred shared instruction filename; `agent.md` is only a fallback if the implementation still supports it.
 - The system should work well when launched by double-click or Explorer context menu, not just from a developer terminal.
@@ -111,6 +114,9 @@ Before changing prompt assembly, think through:
 - final user message
 
 Do not accidentally duplicate or omit one of those layers.
+When changing conversation persistence or summaries:
+- preserve chronological turn order in `## Conversation`
+- make summary refresh operate on the latest persisted file contents, not stale in-memory state
 
 ### Launchers and setup scripts
 Files:

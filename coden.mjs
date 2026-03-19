@@ -33,10 +33,13 @@ const DEFAULTS = {
   tailTurns: 24,
   autoSummarize: true,
   summarizeEveryTurns: 12,
+  minTurnsBetweenLargeFileSummaries: 4,
   maxFileBytesBeforeSummarize: 250_000,
 };
 
 const EXIT_COMMANDS = new Set([":q", ":quit", ":exit"]);
+const REQUIRED_SECTIONS = ["Instructions", "Pinned", "Summary", "Conversation"];
+const SUMMARY_META_RE = /^<!--\s*CODEN-SUMMARY-META\s+(\{.*\})\s*-->\s*\n?/i;
 
 function nowStamp() {
   // Local time stamp
@@ -60,11 +63,71 @@ function atomicWrite(p, text) {
   fs.renameSync(tmp, p);
 }
 
-function ensureLock(lock) {
+function readLockInfo(lock) {
+  const text = safeRead(lock).trim();
+  if (!text) return null;
+
   try {
-    fs.writeFileSync(lock, `${process.pid}\n${nowStamp()}\n`, { flag: "wx" });
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {}
+
+  const [pidLine = "", stampLine = ""] = text.split(/\r?\n/);
+  return {
+    pid: Number(pidLine) || null,
+    stamp: stampLine || "",
+    host: "",
+    user: "",
+  };
+}
+
+function writeLockInfo(lock) {
+  const info = {
+    pid: process.pid,
+    stamp: nowStamp(),
+    host: os.hostname(),
+    user: getRunningUser(),
+    cwd: process.cwd(),
+  };
+  fs.writeFileSync(lock, JSON.stringify(info, null, 2) + "\n", { flag: "wx" });
+  return info;
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
     return true;
-  } catch { return false; }
+  } catch (e) {
+    if (e && (e.code === "EPERM" || e.code === "EACCES")) return true;
+    return false;
+  }
+}
+
+function acquireLock(lock) {
+  try {
+    writeLockInfo(lock);
+    return { ok: true, recovered: false, previous: null };
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") {
+      return { ok: false, recovered: false, previous: null, error: e };
+    }
+  }
+
+  const existing = readLockInfo(lock);
+  const sameHost = existing?.host && existing.host.toLowerCase() === os.hostname().toLowerCase();
+  const alive = sameHost && isProcessAlive(existing?.pid);
+  if (sameHost && !alive) {
+    try {
+      fs.unlinkSync(lock);
+      writeLockInfo(lock);
+      return { ok: true, recovered: true, previous: existing };
+    } catch (e) {
+      return { ok: false, recovered: false, previous: existing, error: e };
+    }
+  }
+
+  return { ok: false, recovered: false, previous: existing, error: null };
 }
 
 function releaseLock(lock) {
@@ -89,6 +152,42 @@ function parseSection(fileText, sectionName) {
   }
 
   return captureStart >= 0 ? normalized.slice(captureStart).trim() : "";
+}
+
+function getTopLevelHeadings(fileText) {
+  const normalized = fileText.replace(/\r\n/g, "\n");
+  const headingRe = /^##\s+([^\n]+)\s*$/gm;
+  const headings = [];
+  let m;
+  while ((m = headingRe.exec(normalized))) {
+    headings.push({
+      name: (m[1] || "").trim(),
+      index: m.index,
+    });
+  }
+  return headings;
+}
+
+function inspectTopicStructure(fileText) {
+  const headings = getTopLevelHeadings(fileText);
+  const counts = new Map();
+  for (const heading of headings) {
+    const key = heading.name.toLowerCase();
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const missingSections = REQUIRED_SECTIONS.filter((name) => !counts.has(name.toLowerCase()));
+  const duplicateSections = REQUIRED_SECTIONS.filter((name) => (counts.get(name.toLowerCase()) || 0) > 1);
+  const unexpectedSections = headings
+    .map((heading) => heading.name)
+    .filter((name) => !REQUIRED_SECTIONS.some((expected) => expected.toLowerCase() === name.toLowerCase()));
+
+  return {
+    missingSections,
+    duplicateSections,
+    unexpectedSections,
+    headings,
+  };
 }
 
 function parseTurns(conversationText) {
@@ -128,9 +227,10 @@ function parseTurns(conversationText) {
   };
 
   while ((m = re.exec(conversationText))) {
+    const stamp = (m[1] || "").trim();
     const body = (m[2] || "");
     const { user, assistant } = extractTurn(body);
-    if (user || assistant) blocks.push({ user, assistant });
+    if (user || assistant) blocks.push({ stamp, user, assistant });
   }
 
   // Fallback if markers were missing
@@ -138,10 +238,54 @@ function parseTurns(conversationText) {
     const parts = conversationText.split(/^USER:\s*/m).slice(1);
     for (const p of parts) {
       const [u, ...rest] = p.split(/^ASSISTANT:\s*/m);
-      blocks.push({ user: (u ?? "").trim(), assistant: rest.join("ASSISTANT: ").trim() });
+      blocks.push({ stamp: "", user: (u ?? "").trim(), assistant: rest.join("ASSISTANT: ").trim() });
     }
   }
+
+  // Keep stamped conversation blocks in chronological order even if older files
+  // were written with the newest turn at the top.
+  const stampedCount = blocks.filter((b) => b.stamp).length;
+  if (stampedCount === blocks.length && blocks.length > 1) {
+    blocks.sort((a, b) => a.stamp.localeCompare(b.stamp));
+  }
   return blocks;
+}
+
+function parseSummaryBody(summaryBody) {
+  const normalized = (summaryBody || "").replace(/\r\n/g, "\n");
+  const match = normalized.match(SUMMARY_META_RE);
+  if (!match) {
+    return {
+      meta: { turnCount: 0, updatedAt: "" },
+      text: normalized.trim(),
+    };
+  }
+
+  let meta = { turnCount: 0, updatedAt: "" };
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (parsed && typeof parsed === "object") {
+      meta = {
+        turnCount: Number(parsed.turnCount) || 0,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+      };
+    }
+  } catch {}
+
+  return {
+    meta,
+    text: normalized.slice(match[0].length).trim(),
+  };
+}
+
+function serializeSummaryBody(summaryText, meta) {
+  const normalizedMeta = {
+    turnCount: Number(meta?.turnCount) || 0,
+    updatedAt: typeof meta?.updatedAt === "string" ? meta.updatedAt : "",
+  };
+  const cleanText = (summaryText || "").trim();
+  const metaLine = `<!-- CODEN-SUMMARY-META ${JSON.stringify(normalizedMeta)} -->`;
+  return cleanText ? `${metaLine}\n${cleanText}\n` : `${metaLine}\n`;
 }
 
 function loadSharedAgentInstructions(workdir) {
@@ -216,29 +360,42 @@ function buildTemplateInstructionsBlock(instructions) {
   ].join("\n");
 }
 
+function buildMissingSectionBody(sectionName) {
+  switch (sectionName) {
+    case "Instructions":
+      return buildTemplateInstructionsBlock("");
+    case "Pinned":
+      return [
+        "- Relevant files: coden.mjs, coden-open.cmd, coden-setup.bat, README.txt",
+        "- Stable facts: This topic lives in the CODEN system folder and should follow the shared AGENTS.md guidance.",
+        "- Constraints: Keep `.coden` files human-editable and treat them as the source of truth for this topic.",
+        "- Preferences: Add any durable user preferences, paths, environment facts, or naming conventions here.",
+      ].join("\n");
+    case "Summary":
+      return "";
+    case "Conversation":
+      return "";
+    default:
+      return "";
+  }
+}
+
+function buildSectionBlock(sectionName) {
+  const body = buildMissingSectionBody(sectionName);
+  return body ? `## ${sectionName}\n${body}\n` : `## ${sectionName}\n`;
+}
+
 function ensureBaseStructure(filePath) {
   const existing = safeRead(filePath);
-  if (/^##\s+Conversation\s*$/m.test(existing)) return existing;
+  if (!existing.trim()) return existing;
 
-  const title = path.basename(filePath, path.extname(filePath));
-  const template =
-`# CODEN v1
-# title: ${title}
+  const inspection = inspectTopicStructure(existing);
+  if (!inspection.missingSections.length) return existing;
 
-## Instructions
-${buildTemplateInstructionsBlock("")}
-
-## Pinned
-- Relevant files: coden.mjs, coden-open.cmd, coden-setup.bat, README.txt
-- Stable facts: This topic lives in the CODEN system folder and should follow the shared AGENTS.md guidance.
-- Constraints: Keep \`.coden\` files human-editable and treat them as the source of truth for this topic.
-- Preferences: Add any durable user preferences, paths, environment facts, or naming conventions here.
-
-## Summary
-
-## Conversation
-`;
-  const merged = (existing.trim() ? existing.trim() + "\n\n" : "") + template;
+  const addition = inspection.missingSections
+    .map((sectionName) => buildSectionBlock(sectionName))
+    .join("\n");
+  const merged = `${existing.trimEnd()}\n\n${addition.trimEnd()}\n`;
   atomicWrite(filePath, merged);
   return merged;
 }
@@ -319,6 +476,12 @@ function shouldBypassSandbox() {
   return isRunningAsAdmin() && DEFAULTS.bypassSandboxWhenAdmin;
 }
 
+function getEffectiveSandboxLabel() {
+  return shouldBypassSandbox()
+    ? "dangerously-bypass-approvals-and-sandbox"
+    : getSandboxMode();
+}
+
 function listDirectoryFiles(workdir) {
   return fs.readdirSync(workdir, { withFileTypes: true })
     .filter((entry) => entry.isFile())
@@ -354,10 +517,11 @@ function showFileList(workdir, selectedIndex) {
   return files;
 }
 
-function showStartupSnapshot({ fileText, sharedInstructions = "", maxTurns = 5 }) {
+function showStartupSnapshot({ fileText, sharedInstructions = "", maxTurns = 5, inspection = null }) {
+  const effectiveInspection = inspection || inspectTopicStructure(fileText);
   const instructions = parseSection(fileText, "Instructions");
   const pinned = parseSection(fileText, "Pinned");
-  const summary = parseSection(fileText, "Summary");
+  const summary = parseSummaryBody(parseSection(fileText, "Summary")).text;
   const conversation = parseSection(fileText, "Conversation");
   const turns = parseTurns(conversation);
   const recent = turns.slice(-maxTurns);
@@ -378,6 +542,32 @@ function showStartupSnapshot({ fileText, sharedInstructions = "", maxTurns = 5 }
       console.log("");
     }
   }
+
+  if (effectiveInspection.missingSections.length || effectiveInspection.duplicateSections.length || effectiveInspection.unexpectedSections.length) {
+    console.log("Structure warnings:");
+    if (effectiveInspection.missingSections.length) {
+      console.log(`- Missing sections were added at the end: ${effectiveInspection.missingSections.join(", ")}`);
+    }
+    if (effectiveInspection.duplicateSections.length) {
+      console.log(`- Duplicate required sections detected: ${effectiveInspection.duplicateSections.join(", ")}`);
+    }
+    if (effectiveInspection.unexpectedSections.length) {
+      console.log(`- Unexpected top-level ## headings detected: ${effectiveInspection.unexpectedSections.join(", ")}`);
+      console.log("  These can break parsing if they were intended to be nested inside a section body.");
+    }
+  }
+}
+
+function replaceSection(fileText, sectionName, newBody) {
+  const normalized = fileText.replace(/\r\n/g, "\n");
+  const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sectionRe = new RegExp(
+    `^##\\s+${escapedName}\\s*$([\\s\\S]*?)(?=^##\\s+|$)`,
+    "m"
+  );
+
+  if (!sectionRe.test(normalized)) return normalized;
+  return normalized.replace(sectionRe, `## ${sectionName}\n\n${newBody}`);
 }
 
 async function initializeEmptyTopicIfNeeded({ filePath, title, rl }) {
@@ -406,37 +596,29 @@ ${assistantMessage.trim()}
 
 `;
 
-  const conversationHeadingRe = /^##\s+Conversation\s*$/m;
-  const match = conversationHeadingRe.exec(text);
-  if (!match) {
-    atomicWrite(codenPath, text + block);
-    return;
-  }
-
-  const insertAt = match.index + match[0].length;
-  const afterHeading = text.slice(insertAt).replace(/^\r?\n*/, "");
-  const prefix = text.slice(0, insertAt).trimEnd();
-  const nextText = `${prefix}\n\n${block}${afterHeading}`.replace(/\n{3,}/g, "\n\n");
+  const conversation = parseSection(text, "Conversation");
+  const nextConversation = conversation.trim()
+    ? `${conversation.trimEnd()}\n\n${block.trimEnd()}\n`
+    : `${block.trimEnd()}\n`;
+  const nextText = replaceSection(text, "Conversation", nextConversation).replace(/\n{3,}/g, "\n\n");
   atomicWrite(codenPath, nextText);
 }
 
-function upsertSummary(codenPath, newSummary) {
+function upsertSummary(codenPath, newSummary, meta = {}) {
   let text = ensureBaseStructure(codenPath);
+  const nextSummaryBody = serializeSummaryBody(newSummary, meta);
 
   if (!/^##\s+Summary\s*$/m.test(text)) {
     if (/^##\s+Conversation\s*$/m.test(text)) {
-      text = text.replace(/^##\s+Conversation\s*$/m, `## Summary\n\n${newSummary.trim()}\n\n## Conversation`);
+      text = text.replace(/^##\s+Conversation\s*$/m, `## Summary\n\n${nextSummaryBody.trimEnd()}\n\n## Conversation`);
     } else {
-      text = text.trim() + `\n\n## Summary\n\n${newSummary.trim()}\n`;
+      text = text.trim() + `\n\n## Summary\n\n${nextSummaryBody.trimEnd()}\n`;
     }
     atomicWrite(codenPath, text);
     return;
   }
 
-  text = text.replace(
-    /^##\s+Summary\s*$([\s\S]*?)(?=^##\s+|(?![\s\S]))/m,
-    `## Summary\n\n${newSummary.trim()}\n\n`
-  );
+  text = replaceSection(text, "Summary", nextSummaryBody);
   atomicWrite(codenPath, text);
 }
 
@@ -539,10 +721,16 @@ async function runCodexOnce({ workdir, prompt, modelOverride, codexBin, stream }
 
 async function summarizeIfNeeded({ codenPath, title, parsed, workdir, codexBin, modelOverride, turnCount, force }) {
   const stats = fs.statSync(codenPath);
+  const priorSummary = parseSummaryBody(parsed.summary);
+  const turnsSinceLastSummary = Math.max(0, turnCount - (priorSummary.meta.turnCount || 0));
   const should =
     force ||
     (DEFAULTS.autoSummarize &&
-      (turnCount % DEFAULTS.summarizeEveryTurns === 0 || stats.size >= DEFAULTS.maxFileBytesBeforeSummarize));
+      (
+        turnsSinceLastSummary >= DEFAULTS.summarizeEveryTurns ||
+        (stats.size >= DEFAULTS.maxFileBytesBeforeSummarize &&
+          turnsSinceLastSummary >= DEFAULTS.minTurnsBetweenLargeFileSummaries)
+      ));
 
   if (!should) return null;
 
@@ -556,7 +744,7 @@ async function summarizeIfNeeded({ codenPath, title, parsed, workdir, codexBin, 
     `Use bullet points. Include: user preferences, ongoing threads, key decisions, and stable facts.`,
     ``,
     `=== Existing summary (may be empty) ===`,
-    parsed.summary?.trim() || "(none)",
+    priorSummary.text || "(none)",
     ``,
     `=== Recent conversation (most recent last) ===`,
     ...turnsTail.flatMap(t => [
@@ -576,10 +764,40 @@ async function summarizeIfNeeded({ codenPath, title, parsed, workdir, codexBin, 
   });
 
   if (newSummary) {
-    upsertSummary(codenPath, newSummary);
+    upsertSummary(codenPath, newSummary, { turnCount, updatedAt: nowStamp() });
     return newSummary;
   }
   return null;
+}
+
+function buildLockMessage(lockPath, lockState) {
+  const info = lockState?.previous;
+  const lines = [
+    "",
+    `This topic is already open (lock exists):`,
+    `  ${lockPath}`,
+  ];
+
+  if (info) {
+    if (info.pid) lines.push(`Lock PID: ${info.pid}`);
+    if (info.user) lines.push(`Lock user: ${info.user}`);
+    if (info.host) lines.push(`Lock host: ${info.host}`);
+    if (info.stamp) lines.push(`Lock created: ${info.stamp}`);
+  }
+
+  lines.push("");
+  lines.push("If you are sure no session is running, delete the .lock file and try again.");
+  return lines.join("\n");
+}
+
+function buildForkPath(workdir, title) {
+  for (let i = 1; i < 1000; i += 1) {
+    const suffix = i === 1 ? " (fork)" : ` (fork ${i})`;
+    const candidate = path.join(workdir, `${title}${suffix}.coden`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+
+  return path.join(workdir, `${title} (fork ${Date.now()}).coden`);
 }
 
 async function main() {
@@ -594,9 +812,14 @@ async function main() {
   const title = path.basename(absPath, path.extname(absPath));
   const lockPath = absPath + ".lock";
 
-  if (!ensureLock(lockPath)) {
-    console.error(`\nThis topic is already open (lock exists):\n  ${lockPath}\n`);
-    console.error("If you are sure no session is running, delete the .lock file and try again.");
+  const lockState = acquireLock(lockPath);
+  if (!lockState.ok) {
+    if (lockState.error) {
+      console.error(`\nFailed to create topic lock:\n  ${lockPath}\n`);
+      console.error(lockState.error?.message ?? lockState.error);
+      process.exit(2);
+    }
+    console.error(buildLockMessage(lockPath, lockState));
     process.exit(2);
   }
 
@@ -632,6 +855,7 @@ Commands:
 
   try {
     const wasInitialized = await initializeEmptyTopicIfNeeded({ filePath: absPath, title, rl });
+    const fileInspectionOnLoad = inspectTopicStructure(safeRead(absPath));
     const fileTextOnLoad = ensureBaseStructure(absPath);
     const startupShared = loadSharedAgentInstructions(workdir);
 
@@ -640,7 +864,13 @@ Commands:
     console.log(`File: ${absPath}`);
     console.log(`Launcher user: ${getRunningUser()}`);
     console.log(`Launcher admin: ${isRunningAsAdmin() ? "yes" : "no"}`);
-    console.log(`Codex sandbox: ${shouldBypassSandbox() ? "bypassed" : getSandboxMode()}`);
+    console.log(`Codex sandbox: ${getEffectiveSandboxLabel()}`);
+    if (shouldBypassSandbox()) {
+      console.log("Warning: admin launch bypasses Codex approvals and sandbox for this session.");
+    }
+    if (lockState.recovered && lockState.previous) {
+      console.log(`Recovered stale lock from PID ${lockState.previous.pid ?? "(unknown)"}.`);
+    }
     if (startupShared.text) {
       console.log(`Shared instructions: ${path.basename(startupShared.path)}`);
     } else {
@@ -651,7 +881,11 @@ Commands:
     console.log("====================================\n");
 
     if (!wasInitialized) {
-      showStartupSnapshot({ fileText: fileTextOnLoad, sharedInstructions: startupShared.text });
+      showStartupSnapshot({
+        fileText: fileTextOnLoad,
+        sharedInstructions: startupShared.text,
+        inspection: fileInspectionOnLoad,
+      });
       console.log("");
     }
 
@@ -765,7 +999,7 @@ Commands:
       }
 
       if (low === ":fork") {
-        const forkPath = path.join(workdir, `${title} (fork).coden`);
+        const forkPath = buildForkPath(workdir, title);
         fs.copyFileSync(absPath, forkPath);
         console.log(`Forked to: ${forkPath}\n`);
         continue;
@@ -782,7 +1016,7 @@ Commands:
       const fileText = ensureBaseStructure(absPath);
       const instructions = parseSection(fileText, "Instructions");
       const pinned = parseSection(fileText, "Pinned");
-      const summary = parseSection(fileText, "Summary");
+      const summary = parseSummaryBody(parseSection(fileText, "Summary")).text;
       const conversation = parseSection(fileText, "Conversation");
       const shared = loadSharedAgentInstructions(workdir);
       const turns = parseTurns(conversation);
@@ -817,9 +1051,12 @@ Commands:
 
         appendTurnToFile(absPath, msg, assistant);
 
-        // Auto summary update
-        const parsedForSummary = { summary, turns };
-        const totalTurns = turns.length + 1; // after append
+        // Re-read after persistence so summaries reflect the current on-disk state.
+        const updatedFileText = ensureBaseStructure(absPath);
+        const parsedForSummary = {
+          summary: parseSection(updatedFileText, "Summary"),
+          turns: parseTurns(parseSection(updatedFileText, "Conversation")),
+        };
         await summarizeIfNeeded({
           codenPath: absPath,
           title,
@@ -827,7 +1064,7 @@ Commands:
           workdir,
           codexBin: session.codexBin,
           modelOverride: session.model,
-          turnCount: totalTurns,
+          turnCount: parsedForSummary.turns.length,
           force: false,
         });
       } catch (e) {

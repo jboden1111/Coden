@@ -23,8 +23,10 @@ What CODEN does
 - Shows startup context for existing topics
 - Prompts for minimal instructions when a `.coden` file is empty
 - Streams Codex output in the terminal
-- Appends each new turn into `## Conversation`
-- Refreshes the rolling summary when requested or when auto-summary triggers
+- Appends each new turn to the end of `## Conversation` in chronological order
+- Refreshes the rolling summary when requested or when auto-summary triggers, using the current persisted topic file state
+- Detects and recovers stale local `.lock` files when the recorded PID is no longer running on the same machine
+- Warns when duplicate or unexpected top-level `##` headings may break section parsing
 
 Requirements
 - Windows
@@ -37,6 +39,12 @@ Install / register `.coden`
 2. Run `coden-setup.bat` as Administrator.
 3. Double-click a `.coden` file to open it with CODEN.
 4. Right-click a `.coden` file and choose `Run Coden as administrator` if you need an elevated launch.
+
+Admin launch behavior
+- Normal launch uses Codex with workspace-write sandboxing.
+- `Run Coden as administrator` keeps the current CODEN behavior: it launches Codex with `--dangerously-bypass-approvals-and-sandbox`.
+- CODEN now prints an explicit startup warning when that full bypass mode is active.
+- Use admin launch only when you intentionally want Codex to operate without its normal approval and sandbox guardrails.
 
 Manual registration
 If you prefer to set the association manually in an elevated command prompt:
@@ -85,6 +93,8 @@ Important format rule
 - Do not add extra `##` headings inside section bodies.
 - CODEN uses `## Section Name` as top-level boundaries, so nested `##` headings inside `Instructions`, `Pinned`, or `Summary` can break parsing.
 - Use plain labels like `Goal:` and bullet lists inside sections instead.
+- If CODEN sees duplicate required sections or unexpected top-level `##` headings, it will warn on startup instead of silently pretending the file is fine.
+- If required sections are missing, CODEN adds only the missing sections at the end of the file instead of appending a full duplicate template.
 
 Commands
 - `:help`               Show commands
@@ -94,7 +104,7 @@ Commands
 - `:model NAME`         Override model for this session
 - `:reload`             No-op reminder; file reload is automatic each turn
 - `:open`               Open the current `.coden` file in Notepad
-- `:fork`               Duplicate the topic file next to it
+- `:fork`               Duplicate the topic file next to it without overwriting older forks
 - `:export`             Save the last assistant reply to `<topic>.last.txt`
 - `:file`               List files in the current directory
 - `:file N`             Select file N from the list
@@ -104,5 +114,14 @@ Commands
 Notes
 - Default sandbox behavior is workspace write access in the topic folder.
 - Each open topic creates a sibling `.lock` file until the session exits.
+- If a prior session crashed, CODEN attempts to recover a stale lock automatically when the lock was created on the same machine and the recorded PID is no longer running.
+- If the lock looks live, or was created on another machine, CODEN refuses to open the topic until the lock is removed manually.
 - Topic files are meant to stay human-editable.
+- Conversation turns are stored oldest-to-newest, and startup snapshots / prompt tails treat the last turns as the most recent context.
 - `AGENTS.md` should hold folder-level operating guidance, not topic-specific conversation state.
+- Rolling summaries include a small hidden metadata comment so CODEN can avoid re-summarizing on every turn once a file gets large.
+
+Recovery tips
+- If CODEN says the topic is already open, check whether another terminal still has that topic active before deleting the `.lock` file.
+- If startup warns about duplicate or unexpected top-level `##` headings, clean those up before relying on the parsed sections.
+- If you want nested structure inside a section, use labels like `Goal:` or `Notes:` and regular bullets, not additional `##` headings.
